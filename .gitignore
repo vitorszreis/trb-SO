@@ -1,0 +1,23 @@
+# Executáveis
+myfs
+*.exe
+*.out
+a.out
+
+# Objetos compilados
+*.o
+*.obj
+
+# Arquivos de disco do simulador
+*.disk
+*.dsk
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*~
+
+# Sistema
+.DS_Store
+Thumbs.db
