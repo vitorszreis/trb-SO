@@ -274,47 +274,6 @@ int myFSClose (int fd) {
 	return -1;
 }
 
-//Funcao para abertura de um diretorio, a partir do caminho
-//especificado em path, no disco indicado por d, no modo Read/Write,
-//criando o diretorio se nao existir. Retorna um descritor de arquivo,
-//em caso de sucesso. Retorna -1, caso contrario.
-int myFSOpenDir (Disk *d, const char *path) {
-	return -1;
-}
-
-//Funcao para a leitura de um diretorio, identificado por um descritor
-//de arquivo existente. Os dados lidos correspondem a uma entrada de
-//diretorio na posicao atual do cursor no diretorio. O nome da entrada
-//e' copiado para filename, como uma string terminada em \0 (max 255+1).
-//O numero do inode correspondente 'a entrada e' copiado para inumber.
-//Retorna 1 se uma entrada foi lida, 0 se fim de diretorio ou -1 caso
-//mal sucedido
-int myFSReadDir (int fd, char *filename, unsigned int *inumber) {
-	return -1;
-}
-
-//Funcao para adicionar uma entrada a um diretorio, identificado por um
-//descritor de arquivo existente. A nova entrada tera' o nome indicado
-//por filename e apontara' para o numero de i-node indicado por inumber.
-//Retorna 0 caso bem sucedido, ou -1 caso contrario.
-int myFSLink (int fd, const char *filename, unsigned int inumber) {
-	return -1;
-}
-
-//Funcao para remover uma entrada existente em um diretorio, 
-//identificado por um descritor de arquivo existente. A entrada e'
-//identificada pelo nome indicado em filename. Retorna 0 caso bem
-//sucedido, ou -1 caso contrario.
-int myFSUnlink (int fd, const char *filename) {
-	return -1;
-}
-
-//Funcao para fechar um diretorio, identificado por um descritor de
-//arquivo existente. Retorna 0 caso bem sucedido, ou -1 caso contrario.	
-int myFSCloseDir (int fd) {
-	return -1;
-}
-
 //Funcao para instalar seu sistema de arquivos no S.O., registrando-o junto
 //ao virtual FS (vfs). Retorna um identificador unico (slot), caso
 //o sistema de arquivos tenha sido registrado com sucesso.
