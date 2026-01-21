@@ -1,5 +1,6 @@
 # Executáveis
 myfs
+simulador
 *.exe
 *.out
 a.out
