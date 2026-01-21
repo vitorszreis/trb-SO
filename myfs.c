@@ -22,6 +22,9 @@
 #define BITMAP_SECTOR 1
 #define MAX_OPEN_FILES 128
 
+#define MAX_FILES 128
+#define MAX_FILENAME 32
+
 // Estrutura do superbloco
 typedef struct {
     unsigned int magic;
@@ -41,10 +44,19 @@ typedef struct {
     Inode *inode;
 } FileDescriptor;
 
+typedef struct {
+	char name[MAX_FILENAME];
+	unsigned int inumber;
+} DirEntry;
+
+
 // Variaveis globais
 static Superblock *mountedSB = NULL;
 static FileDescriptor fdTable[MAX_OPEN_FILES];
 static Disk *mountedDisk = NULL;
+
+static DirEntry rootDir[MAX_FILES];
+static int rootDirSize = 0;
 
 // Funcoes auxiliares
 static unsigned int bytesToSectors(unsigned int bytes) {
@@ -240,154 +252,104 @@ int myFSxMount (Disk *d, int x) {
 	}
 }
 
-//Funcao auxiliar para encontrar um i-node livre
-//Retorna o numero do i-node livre ou 0 se nao encontrado
-//Um i-node e' considerado livre se refCount == 0 e fileType == 0
-static unsigned int findFreeInode(Disk *d) {
-    // Percorre os i-nodes procurando um livre
-    // Limitamos a busca aos primeiros 100 i-nodes (criados na formatacao)
-    for (unsigned int i = 1; i <= 100; i++) {
-        Inode *inode = inodeLoad(i, d);
-        if (!inode) {
-            // Se nao conseguiu carregar, tenta criar um novo
-            inode = inodeCreate(i, d);
-            if (inode) {
-                free(inode);
-                return i;
-            }
-            continue;
-        }
-        
-        // Verifica se o i-node esta livre (nao em uso)
-        // Criterio: refCount == 0 indica que nao ha arquivo usando este i-node
-        if (inodeGetRefCount(inode) == 0) {
-            free(inode);
-            return i;
-        }
-        free(inode);
-    }
-    return 0;
+unsigned int dirFind(const char *name) {
+	for (int i = 0; i < rootDirSize; i++) {
+		if (strcmp(rootDir[i].name, name) == 0) {
+			return rootDir[i].inumber;
+		}
+	}
+	return 0;
 }
 
-//Funcao auxiliar para buscar um arquivo pelo nome nos i-nodes
-//Retorna o numero do i-node se encontrado, ou 0 se nao encontrado
-static unsigned int findFileByName(Disk *d, const char *filename) {
-    // Calcula o hash do nome do arquivo
-    unsigned int nameHash = 0;
-    for (const char *p = filename; *p; p++) {
-        nameHash = nameHash * 31 + (unsigned char)*p;
-    }
-    
-    // Percorre os i-nodes procurando pelo arquivo
-    for (unsigned int i = 1; i <= 100; i++) {
-        Inode *inode = inodeLoad(i, d);
-        if (!inode) continue;
-        
-        // Verifica se o i-node esta em uso (refCount > 0 e tipo regular)
-        if (inodeGetRefCount(inode) > 0 && 
-            inodeGetFileType(inode) == FILETYPE_REGULAR) {
-            // Usamos o campo Owner para armazenar o hash do nome
-            if (inodeGetOwner(inode) == nameHash) {
-                unsigned int inumber = inodeGetNumber(inode);
-                free(inode);
-                return inumber;
-            }
-        }
-        free(inode);
-    }
-    return 0;
+int dirAdd(const char *name, unsigned int inumber) {
+	if (rootDirSize >= MAX_FILES) {
+		return -1;
+	}
+
+	strncpy(rootDir[rootDirSize].name, name, MAX_FILENAME - 1);
+	rootDir[rootDirSize].name[MAX_FILENAME - 1] = '\0';
+	rootDir[rootDirSize].inumber = inumber;
+	rootDirSize++;
+
+	return 0;
 }
 
-//Funcao auxiliar para calcular hash do nome do arquivo
-static unsigned int hashFileName(const char *filename) {
-    unsigned int hash = 0;
-    for (const char *p = filename; *p; p++) {
-        hash = hash * 31 + (unsigned char)*p;
-    }
-    return hash;
+static Inode* myFSGetOrCreateInode(Disk *d, const char *filename) {
+	if (!d || !filename || strlen(filename) == 0) {
+		return NULL;
+	}
+
+	/* 1. Verifica se o arquivo já existe no diretório */
+	unsigned int inumber = dirFind(filename);
+	if (inumber != 0) {
+		/* Arquivo existe: carrega inode */
+		return inodeLoad(inumber, d);
+	}
+
+	/* 2. Arquivo não existe: encontrar inode livre */
+	unsigned int freeInumber = inodeFindFreeInode(1, d);
+	if (freeInumber == 0) {
+		return NULL;
+	}
+
+	/* 3. Criar inode */
+	Inode *inode = inodeCreate(freeInumber, d);
+	if (!inode) {
+		return NULL;
+	}
+
+	/* 4. Inicialização básica do inode */
+	inodeSetFileType(inode, 1);      /* arquivo regular */
+	inodeSetFileSize(inode, 0);
+	inodeSetRefCount(inode, 0);
+	inodeSave(inode);
+
+	/* 5. Registrar no diretório */
+	if (dirAdd(filename, freeInumber) != 0) {
+		/* rollback simples */
+		inodeClear(inode);
+		free(inode);
+		return NULL;
+	}
+
+	return inode;
 }
 
 //Funcao para abertura de um arquivo, a partir do caminho especificado
 //em path, no disco montado especificado em d, no modo Read/Write,
 //criando o arquivo se nao existir. Retorna um descritor de arquivo,
 //em caso de sucesso. Retorna -1, caso contrario.
-int myFSOpen (Disk *d, const char *path) {
-    // Validacao: sistema deve estar montado
-    if (!mountedSB || mountedDisk != d) {
-        return -1;
-    }
-    
-    // Validacao: path nao pode ser nulo ou vazio
-    if (!path || path[0] == '\0') {
-        return -1;
-    }
-    
-    // Encontrar um descritor de arquivo livre
-    int fd = -1;
-    for (int i = 0; i < MAX_OPEN_FILES; i++) {
-        if (!fdTable[i].inUse) {
-            fd = i;
-            break;
-        }
-    }
-    
-    // Se nao ha descritor livre, retorna erro
-    if (fd == -1) {
-        return -1;
-    }
-    
-    // Calcular hash do nome do arquivo para identificacao
-    unsigned int nameHash = hashFileName(path);
-    
-    // Tentar encontrar o arquivo existente
-    unsigned int inumber = findFileByName(d, path);
-    Inode *inode = NULL;
-    
-    if (inumber != 0) {
-        // Arquivo existe - carregar o i-node
-        inode = inodeLoad(inumber, d);
-        if (!inode) {
-            return -1;
-        }
-    } else {
-        // Arquivo nao existe - criar novo
-        // Encontrar um i-node livre usando nossa funcao
-        inumber = findFreeInode(d);
-        if (inumber == 0) {
-            return -1; // Nao ha i-nodes livres
-        }
-        
-        // Carregar o i-node existente e configura-lo
-        inode = inodeLoad(inumber, d);
-        if (!inode) {
-            // Se nao conseguiu carregar, tenta criar
-            inode = inodeCreate(inumber, d);
-            if (!inode) {
-                return -1;
-            }
-        }
-        
-        // Configurar o i-node para um arquivo regular
-        inodeSetFileType(inode, FILETYPE_REGULAR);
-        inodeSetFileSize(inode, 0);
-        inodeSetOwner(inode, nameHash);  // Usamos Owner para guardar hash do nome
-        inodeSetRefCount(inode, 1);      // Marca como em uso
-        inodeSetPermission(inode, 0644); // Permissoes padrao
-        
-        // Salvar o i-node no disco
-        if (inodeSave(inode) < 0) {
-            free(inode);
-            return -1;
-        }
-    }
-    
-    // Configurar o descritor de arquivo
-    fdTable[fd].inUse = 1;
-    fdTable[fd].inumber = inumber;
-    fdTable[fd].cursor = 0;  // Cursor inicia no inicio do arquivo
-    fdTable[fd].inode = inode;
-    
-    return fd;
+int myFSOpen(Disk *d, const char *path) {
+	if (!mountedSB || d != mountedDisk || !path || strlen(path) == 0) {
+		return -1;
+	}
+
+	Inode *inode = myFSGetOrCreateInode(d, path);
+	if (!inode) {
+		return -1;
+	}
+
+	int idx;
+	for (idx = 0; idx < MAX_OPEN_FILES; idx++) {
+		if (!fdTable[idx].inUse) break;
+	}
+
+	if (idx == MAX_OPEN_FILES) {
+		free(inode);
+		return -1;
+	}
+
+	unsigned int refs = inodeGetRefCount(inode);
+	inodeSetRefCount(inode, refs + 1);
+	inodeSave(inode);
+
+	fdTable[idx].inUse   = 1;
+	fdTable[idx].inumber = inodeGetNumber(inode);
+	fdTable[idx].cursor  = 0;
+	fdTable[idx].inode   = inode;
+
+	/* 🔑 retorna descritor começando em 1 */
+	return idx + 1;
 }
 	
 //Funcao para a leitura de um arquivo, a partir de um descritor de arquivo
