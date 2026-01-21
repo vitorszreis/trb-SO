@@ -240,12 +240,154 @@ int myFSxMount (Disk *d, int x) {
 	}
 }
 
+//Funcao auxiliar para encontrar um i-node livre
+//Retorna o numero do i-node livre ou 0 se nao encontrado
+//Um i-node e' considerado livre se refCount == 0 e fileType == 0
+static unsigned int findFreeInode(Disk *d) {
+    // Percorre os i-nodes procurando um livre
+    // Limitamos a busca aos primeiros 100 i-nodes (criados na formatacao)
+    for (unsigned int i = 1; i <= 100; i++) {
+        Inode *inode = inodeLoad(i, d);
+        if (!inode) {
+            // Se nao conseguiu carregar, tenta criar um novo
+            inode = inodeCreate(i, d);
+            if (inode) {
+                free(inode);
+                return i;
+            }
+            continue;
+        }
+        
+        // Verifica se o i-node esta livre (nao em uso)
+        // Criterio: refCount == 0 indica que nao ha arquivo usando este i-node
+        if (inodeGetRefCount(inode) == 0) {
+            free(inode);
+            return i;
+        }
+        free(inode);
+    }
+    return 0;
+}
+
+//Funcao auxiliar para buscar um arquivo pelo nome nos i-nodes
+//Retorna o numero do i-node se encontrado, ou 0 se nao encontrado
+static unsigned int findFileByName(Disk *d, const char *filename) {
+    // Calcula o hash do nome do arquivo
+    unsigned int nameHash = 0;
+    for (const char *p = filename; *p; p++) {
+        nameHash = nameHash * 31 + (unsigned char)*p;
+    }
+    
+    // Percorre os i-nodes procurando pelo arquivo
+    for (unsigned int i = 1; i <= 100; i++) {
+        Inode *inode = inodeLoad(i, d);
+        if (!inode) continue;
+        
+        // Verifica se o i-node esta em uso (refCount > 0 e tipo regular)
+        if (inodeGetRefCount(inode) > 0 && 
+            inodeGetFileType(inode) == FILETYPE_REGULAR) {
+            // Usamos o campo Owner para armazenar o hash do nome
+            if (inodeGetOwner(inode) == nameHash) {
+                unsigned int inumber = inodeGetNumber(inode);
+                free(inode);
+                return inumber;
+            }
+        }
+        free(inode);
+    }
+    return 0;
+}
+
+//Funcao auxiliar para calcular hash do nome do arquivo
+static unsigned int hashFileName(const char *filename) {
+    unsigned int hash = 0;
+    for (const char *p = filename; *p; p++) {
+        hash = hash * 31 + (unsigned char)*p;
+    }
+    return hash;
+}
+
 //Funcao para abertura de um arquivo, a partir do caminho especificado
 //em path, no disco montado especificado em d, no modo Read/Write,
 //criando o arquivo se nao existir. Retorna um descritor de arquivo,
 //em caso de sucesso. Retorna -1, caso contrario.
 int myFSOpen (Disk *d, const char *path) {
-	return -1;
+    // Validacao: sistema deve estar montado
+    if (!mountedSB || mountedDisk != d) {
+        return -1;
+    }
+    
+    // Validacao: path nao pode ser nulo ou vazio
+    if (!path || path[0] == '\0') {
+        return -1;
+    }
+    
+    // Encontrar um descritor de arquivo livre
+    int fd = -1;
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        if (!fdTable[i].inUse) {
+            fd = i;
+            break;
+        }
+    }
+    
+    // Se nao ha descritor livre, retorna erro
+    if (fd == -1) {
+        return -1;
+    }
+    
+    // Calcular hash do nome do arquivo para identificacao
+    unsigned int nameHash = hashFileName(path);
+    
+    // Tentar encontrar o arquivo existente
+    unsigned int inumber = findFileByName(d, path);
+    Inode *inode = NULL;
+    
+    if (inumber != 0) {
+        // Arquivo existe - carregar o i-node
+        inode = inodeLoad(inumber, d);
+        if (!inode) {
+            return -1;
+        }
+    } else {
+        // Arquivo nao existe - criar novo
+        // Encontrar um i-node livre usando nossa funcao
+        inumber = findFreeInode(d);
+        if (inumber == 0) {
+            return -1; // Nao ha i-nodes livres
+        }
+        
+        // Carregar o i-node existente e configura-lo
+        inode = inodeLoad(inumber, d);
+        if (!inode) {
+            // Se nao conseguiu carregar, tenta criar
+            inode = inodeCreate(inumber, d);
+            if (!inode) {
+                return -1;
+            }
+        }
+        
+        // Configurar o i-node para um arquivo regular
+        inodeSetFileType(inode, FILETYPE_REGULAR);
+        inodeSetFileSize(inode, 0);
+        inodeSetOwner(inode, nameHash);  // Usamos Owner para guardar hash do nome
+        inodeSetRefCount(inode, 1);      // Marca como em uso
+        inodeSetPermission(inode, 0644); // Permissoes padrao
+        
+        // Salvar o i-node no disco
+        if (inodeSave(inode) < 0) {
+            free(inode);
+            return -1;
+        }
+    }
+    
+    // Configurar o descritor de arquivo
+    fdTable[fd].inUse = 1;
+    fdTable[fd].inumber = inumber;
+    fdTable[fd].cursor = 0;  // Cursor inicia no inicio do arquivo
+    fdTable[fd].inode = inode;
+    
+    return fd;
 }
 	
 //Funcao para a leitura de um arquivo, a partir de um descritor de arquivo
@@ -271,7 +413,38 @@ int myFSWrite (int fd, const char *buf, unsigned int nbytes) {
 //Funcao para fechar um arquivo, a partir de um descritor de arquivo
 //existente. Retorna 0 caso bem sucedido, ou -1 caso contrario
 int myFSClose (int fd) {
-	return -1;
+    // Validacao: fd deve estar dentro do intervalo valido
+    if (fd < 0 || fd >= MAX_OPEN_FILES) {
+        return -1;
+    }
+    
+    // Validacao: o descritor deve estar em uso
+    if (!fdTable[fd].inUse) {
+        return -1;
+    }
+    
+    // Validacao: sistema deve estar montado
+    if (!mountedSB) {
+        return -1;
+    }
+    
+    // Salvar o i-node no disco para persistir quaisquer alteracoes
+    if (fdTable[fd].inode) {
+        if (inodeSave(fdTable[fd].inode) < 0) {
+            return -1;
+        }
+        
+        // Liberar a memoria do i-node
+        free(fdTable[fd].inode);
+    }
+    
+    // Limpar o descritor de arquivo
+    fdTable[fd].inUse = 0;
+    fdTable[fd].inumber = 0;
+    fdTable[fd].cursor = 0;
+    fdTable[fd].inode = NULL;
+    
+    return 0;
 }
 
 //Funcao para instalar seu sistema de arquivos no S.O., registrando-o junto
