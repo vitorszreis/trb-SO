@@ -315,6 +315,38 @@ static Inode* myFSGetOrCreateInode(Disk *d, const char *filename) {
 	return inode;
 }
 
+// Função auxiliar para alocar um bloco livre no disco
+static unsigned int allocFreeBlock(Disk *d, Superblock *sb) {
+	if (!d || !sb) return 0;
+	unsigned int totalBlocks = sb->totalBlocks;
+	unsigned int bitmapSizeBytes = (totalBlocks + 7) / 8;
+	unsigned char *bitmap = malloc(bitmapSizeBytes);
+	if (!bitmap) return 0;
+	if (readBitmap(d, bitmap, bitmapSizeBytes) < 0) {
+		free(bitmap);
+		return 0;
+	}
+	// Procura por um bit livre
+	for (unsigned int i = 0; i < totalBlocks; i++) {
+		unsigned int byteIdx = i / 8;
+		unsigned int bitIdx = i % 8;
+		if (!(bitmap[byteIdx] & (1 << bitIdx))) {
+			// Marca como ocupado
+			bitmap[byteIdx] |= (1 << bitIdx);
+			if (writeBitmap(d, bitmap, bitmapSizeBytes) < 0) {
+				free(bitmap);
+				return 0;
+			}
+			free(bitmap);
+			sb->freeBlocks--;
+			// Retorna o endereço do bloco (número do bloco)
+			return i + 1; // Blocos numerados a partir de 1
+		}
+	}
+	free(bitmap);
+	return 0; // Nenhum bloco livre
+}
+
 // Reposiciona o cursor do arquivo aberto para a posição desejada
 // Retorna 0 em caso de sucesso, -1 em caso de erro
 static int myFSSeek(int fd, unsigned int pos) {
@@ -371,8 +403,8 @@ int myFSOpen(Disk *d, const char *path) {
 //do próximo byte apos o ultimo lido. Retorna o numero de bytes
 //efetivamente lidos em caso de sucesso ou -1, caso contrario.
 int myFSRead (int fd, char *buf, unsigned int nbytes) {
-		// Garante que o cursor está no início do arquivo antes de ler
-		myFSSeek(fd, 0);
+	// Garante que o cursor está no início do arquivo antes de ler
+	myFSSeek(fd, 0);
 	int idx = fd - 1;
 	if (idx < 0 || idx >= MAX_OPEN_FILES) return -1;
 	if (!fdTable[idx].inUse) return -1;
@@ -421,7 +453,59 @@ int myFSRead (int fd, char *buf, unsigned int nbytes) {
 //proximo byte apos o ultimo escrito. Retorna o numero de bytes
 //efetivamente escritos em caso de sucesso ou -1, caso contrario
 int myFSWrite (int fd, const char *buf, unsigned int nbytes) {
-	return -1; // Implementacao pendente
+    int idx = fd - 1;
+
+    if (idx < 0 || idx >= MAX_OPEN_FILES) return -1;
+    if (!fdTable[idx].inUse) return -1;
+    if (!buf || nbytes == 0) return 0;
+
+    Inode *inode = fdTable[idx].inode;
+    unsigned int cursor = fdTable[idx].cursor;
+    unsigned int written = 0;
+    unsigned int blockSize = mountedSB->blockSize;
+    unsigned int fileSize = inodeGetFileSize(inode);
+    Disk *d = mountedDisk;
+
+    while (written < nbytes) {
+        unsigned int blockNum = (cursor + written) / blockSize;
+        unsigned int blockOffset = (cursor + written) % blockSize;
+
+        unsigned int blockAddr = inodeGetBlockAddr(inode, blockNum);
+        if (blockAddr == 0) {
+            // Aloca novo bloco
+            blockAddr = allocFreeBlock(d, mountedSB);
+            if (blockAddr == 0) break;
+            if (inodeAddBlock(inode, blockAddr) < 0) break;
+        }
+
+        unsigned char sector[blockSize];
+        // Lê o bloco atual do disco
+        unsigned int sectorNum = blockToSector(blockNum, mountedSB);
+        if (diskReadSector(d, sectorNum, sector) < 0) break;
+
+        // Calcula quantos bytes pode escrever neste bloco
+        unsigned int toWrite = blockSize - blockOffset;
+        if (toWrite > (nbytes - written)) {
+            toWrite = nbytes - written;
+        }
+
+        // Copia os dados para o bloco
+        memcpy(sector + blockOffset, buf + written, toWrite);
+
+        // Escreve o bloco de volta no disco
+        if (diskWriteSector(d, sectorNum, sector) < 0) break;
+
+        written += toWrite;
+    }
+
+    // Atualiza cursor e tamanho do arquivo
+    fdTable[idx].cursor += written;
+    if (fdTable[idx].cursor > fileSize) {
+        inodeSetFileSize(inode, fdTable[idx].cursor);
+    }
+    inodeSave(inode);
+
+    return written;
 }
 
 //Funcao para fechar um arquivo, a partir de um descritor de arquivo
