@@ -374,40 +374,29 @@ int myFSWrite (int fd, const char *buf, unsigned int nbytes) {
 
 //Funcao para fechar um arquivo, a partir de um descritor de arquivo
 //existente. Retorna 0 caso bem sucedido, ou -1 caso contrario
-int myFSClose (int fd) {
-    // Validacao: fd deve estar dentro do intervalo valido
-    if (fd < 0 || fd >= MAX_OPEN_FILES) {
-        return -1;
-    }
-    
-    // Validacao: o descritor deve estar em uso
-    if (!fdTable[fd].inUse) {
-        return -1;
-    }
-    
-    // Validacao: sistema deve estar montado
-    if (!mountedSB) {
-        return -1;
-    }
-    
-    // Salvar o i-node no disco para persistir quaisquer alteracoes
-    if (fdTable[fd].inode) {
-        if (inodeSave(fdTable[fd].inode) < 0) {
-            return -1;
-        }
-        
-        // Liberar a memoria do i-node
-        free(fdTable[fd].inode);
-    }
-    
-    // Limpar o descritor de arquivo
-    fdTable[fd].inUse = 0;
-    fdTable[fd].inumber = 0;
-    fdTable[fd].cursor = 0;
-    fdTable[fd].inode = NULL;
-    
-    return 0;
+int myFSClose(int fd) {
+	int idx = fd - 1;  // conversão OBRIGATÓRIA
+
+	if (idx < 0 || idx >= MAX_OPEN_FILES) {
+		return -1;
+	}
+
+	if (!fdTable[idx].inUse) {
+		return -1;
+	}
+
+	if (fdTable[idx].inode) {
+		free(fdTable[idx].inode);
+	}
+
+	fdTable[idx].inUse = 0;
+	fdTable[idx].inumber = 0;
+	fdTable[idx].cursor = 0;
+	fdTable[idx].inode = NULL;
+
+	return 0;
 }
+
 
 //Funcao para instalar seu sistema de arquivos no S.O., registrando-o junto
 //ao virtual FS (vfs). Retorna um identificador unico (slot), caso
