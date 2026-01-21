@@ -19,7 +19,5 @@
 //o sistema de arquivos tenha sido registrado com sucesso.
 //Caso contrario, retorna -1
 int installMyFS ( void );
-unsigned int dirFind(const char *name);
-int dirAdd(const char *name, unsigned int inumber);
 
 #endif
