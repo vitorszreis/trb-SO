@@ -294,11 +294,6 @@ int installMyFS (void) {
 	fsInfo->readFn = myFSRead;
 	fsInfo->writeFn = myFSWrite;
 	fsInfo->closeFn = myFSClose;
-	fsInfo->opendirFn = myFSOpenDir;
-	fsInfo->readdirFn = myFSReadDir;
-	fsInfo->linkFn = myFSLink;
-	fsInfo->unlinkFn = myFSUnlink;
-	fsInfo->closedirFn = myFSCloseDir;
 	
 	if (vfsRegisterFS(fsInfo) < 0) {
 		free(fsInfo);
