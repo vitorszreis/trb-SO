@@ -1,7 +1,7 @@
 /*
 *  myfs.c - Implementacao do sistema de arquivos MyFS
 *
-*  Autores: SUPER_PROGRAMADORES_C
+*  Autores: Caio Fernandes dos Reis, Luiza Caldeira Daniel e Vitor de Souza Reis
 *  Projeto: Trabalho Pratico II - Sistemas Operacionais
 *  Organizacao: Universidade Federal de Juiz de Fora
 *  Departamento: Dep. Ciencia da Computacao
@@ -315,6 +315,19 @@ static Inode* myFSGetOrCreateInode(Disk *d, const char *filename) {
 	return inode;
 }
 
+// Reposiciona o cursor do arquivo aberto para a posição desejada
+// Retorna 0 em caso de sucesso, -1 em caso de erro
+static int myFSSeek(int fd, unsigned int pos) {
+	int idx = fd - 1;
+	if (idx < 0 || idx >= MAX_OPEN_FILES) return -1;
+	if (!fdTable[idx].inUse) return -1;
+	Inode *inode = fdTable[idx].inode;
+	unsigned int fileSize = inodeGetFileSize(inode);
+	if (pos > fileSize) return -1; // Não permite posicionar além do fim
+	fdTable[idx].cursor = pos;
+	return 0;
+}
+
 //Funcao para abertura de um arquivo, a partir do caminho especificado
 //em path, no disco montado especificado em d, no modo Read/Write,
 //criando o arquivo se nao existir. Retorna um descritor de arquivo,
@@ -348,7 +361,6 @@ int myFSOpen(Disk *d, const char *path) {
 	fdTable[idx].cursor  = 0;
 	fdTable[idx].inode   = inode;
 
-	/* 🔑 retorna descritor começando em 1 */
 	return idx + 1;
 }
 	
@@ -359,7 +371,47 @@ int myFSOpen(Disk *d, const char *path) {
 //do próximo byte apos o ultimo lido. Retorna o numero de bytes
 //efetivamente lidos em caso de sucesso ou -1, caso contrario.
 int myFSRead (int fd, char *buf, unsigned int nbytes) {
-	return -1;
+		// Garante que o cursor está no início do arquivo antes de ler
+		myFSSeek(fd, 0);
+	int idx = fd - 1;
+	if (idx < 0 || idx >= MAX_OPEN_FILES) return -1;
+	if (!fdTable[idx].inUse) return -1;
+	if (!buf || nbytes == 0) return 0;
+
+	Inode *inode = fdTable[idx].inode;
+	unsigned int cursor = fdTable[idx].cursor;
+	unsigned int fileSize = inodeGetFileSize(inode);
+	unsigned int blockSize = mountedSB->blockSize;
+	Disk *d = mountedDisk;
+	unsigned int readBytes = 0;
+
+	// Não ler além do fim do arquivo
+	if (cursor >= fileSize) return 0;
+	if (nbytes > (fileSize - cursor)) {
+		nbytes = fileSize - cursor;
+	}
+
+	while (readBytes < nbytes) {
+		unsigned int blockNum = (cursor + readBytes) / blockSize;
+		unsigned int blockOffset = (cursor + readBytes) % blockSize;
+		unsigned int blockAddr = inodeGetBlockAddr(inode, blockNum);
+		if (blockAddr == 0) break; // bloco não alocado
+
+		unsigned char sector[blockSize];
+		unsigned int sectorNum = blockToSector(blockNum, mountedSB);
+		if (diskReadSector(d, sectorNum, sector) < 0) break;
+
+		unsigned int toRead = blockSize - blockOffset;
+		if (toRead > (nbytes - readBytes)) {
+			toRead = nbytes - readBytes;
+		}
+
+		memcpy(buf + readBytes, sector + blockOffset, toRead);
+		readBytes += toRead;
+	}
+
+	fdTable[idx].cursor += readBytes;
+	return readBytes;
 }
 
 //Funcao para a escrita de um arquivo, a partir de um descritor de arquivo
@@ -369,7 +421,7 @@ int myFSRead (int fd, char *buf, unsigned int nbytes) {
 //proximo byte apos o ultimo escrito. Retorna o numero de bytes
 //efetivamente escritos em caso de sucesso ou -1, caso contrario
 int myFSWrite (int fd, const char *buf, unsigned int nbytes) {
-	return -1;
+	return -1; // Implementacao pendente
 }
 
 //Funcao para fechar um arquivo, a partir de um descritor de arquivo
@@ -396,7 +448,6 @@ int myFSClose(int fd) {
 
 	return 0;
 }
-
 
 //Funcao para instalar seu sistema de arquivos no S.O., registrando-o junto
 //ao virtual FS (vfs). Retorna um identificador unico (slot), caso
