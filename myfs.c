@@ -403,8 +403,6 @@ int myFSOpen(Disk *d, const char *path) {
 //do próximo byte apos o ultimo lido. Retorna o numero de bytes
 //efetivamente lidos em caso de sucesso ou -1, caso contrario.
 int myFSRead (int fd, char *buf, unsigned int nbytes) {
-	// Garante que o cursor está no início do arquivo antes de ler
-	myFSSeek(fd, 0);
 	int idx = fd - 1;
 	if (idx < 0 || idx >= MAX_OPEN_FILES) return -1;
 	if (!fdTable[idx].inUse) return -1;
@@ -429,8 +427,8 @@ int myFSRead (int fd, char *buf, unsigned int nbytes) {
 		unsigned int blockAddr = inodeGetBlockAddr(inode, blockNum);
 		if (blockAddr == 0) break; // bloco não alocado
 
-		unsigned char sector[blockSize];
-		unsigned int sectorNum = blockToSector(blockNum, mountedSB);
+		unsigned char sector[DISK_SECTORDATASIZE];
+		unsigned int sectorNum = blockToSector(blockAddr - 1, mountedSB);
 		if (diskReadSector(d, sectorNum, sector) < 0) break;
 
 		unsigned int toRead = blockSize - blockOffset;
